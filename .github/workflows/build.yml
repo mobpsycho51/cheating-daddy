@@ -69,3 +69,4 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
