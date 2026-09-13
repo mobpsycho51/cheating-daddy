@@ -6,24 +6,13 @@ on:
       - 'v*'
   workflow_dispatch:
 
-
 env:
   GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
   ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: linux
-          - os: macos-latest
-            target: macos
-          - os: windows-latest
-            target: windows
-    
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +34,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: artifacts-${{ matrix.os }}
+          name: artifacts-windows
           path: out/make/
           retention-days: 5
 
