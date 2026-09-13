@@ -38,5 +38,5 @@ jobs:
       
       - name: Push version bump and tag
         run: |
-          git push origin main
+          git push origin HEAD:${{ github.ref_name }}
           git push origin --tags
