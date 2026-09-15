@@ -177,6 +177,38 @@ function setupStorageIpcHandlers() {
         }
     });
 
+    ipcMain.handle('storage:get-groq-api-keys', async () => {
+    try {
+        return {
+            success: true,
+            data: {
+                keys: storage.getGroqApiKeys(),
+                activeIndex: storage.getActiveGroqKeyIndex(),
+            },
+        };
+    } catch (error) {
+        console.error('Error getting Groq API keys:', error);
+        return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle('storage:set-groq-api-keys', async (event, keys) => {
+    try {
+        storage.setGroqApiKeys(keys);
+
+        return {
+            success: true,
+            data: {
+                keys: storage.getGroqApiKeys(),
+                activeIndex: storage.getActiveGroqKeyIndex(),
+            },
+        };
+    } catch (error) {
+        console.error('Error setting Groq API keys:', error);
+        return { success: false, error: error.message };
+    }
+});
+
     // ============ PREFERENCES ============
     ipcMain.handle('storage:get-preferences', async () => {
         try {

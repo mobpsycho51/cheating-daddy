@@ -734,7 +734,7 @@ export class MainView extends LitElement {
         _geminiKey: { state: true },
         _geminiKeys: { state: true },
         _activeKeyIndex: { state: true },
-        _groqKey: { state: true },
+        _groqKeys: { state: true },
         _openaiKey: { state: true },
         _geminiLiveModel: { state: true },
         _groqModel: { state: true },
@@ -765,7 +765,12 @@ export class MainView extends LitElement {
         this._geminiKey = '';
         this._geminiKeys = [];
         this._activeKeyIndex = 0;
-        this._groqKey = '';
+        this._groqKeys = [
+            { label: 'Key 1', key: '' },
+            { label: 'Key 2', key: '' },
+            { label: 'Key 3', key: '' },
+            { label: 'Key 4', key: '' },
+        ];
         this._openaiKey = '';
         this._geminiLiveModel = 'gemini-3.1-flash-live-preview';
         this._groqModel = 'qwen/qwen3.6-27b';
@@ -810,7 +815,8 @@ export class MainView extends LitElement {
             this._geminiKeys = geminiKeys.keys || [];
             this._activeKeyIndex = geminiKeys.activeIndex || 0;
 
-            this._groqKey = (await cheatingDaddy.storage.getGroqApiKey().catch(() => '')) || '';
+            const groqData = await cheatingDaddy.storage.getGroqApiKeys().catch(() => []);
+            this._groqKeys = [0, 1, 2, 3].map(i => groqData[i] || { label: `Key ${i + 1}`, key: '' });
             this._openaiKey = creds.openaiKey || '';
             this._geminiLiveModel = config.geminiLiveModel || 'gemini-3.1-flash-live-preview';
             this._groqModel = config.groqModel || 'qwen/qwen3.6-27b';
@@ -1018,10 +1024,19 @@ export class MainView extends LitElement {
         this._applyKeyState(await cheatingDaddy.storage.setActiveKeyIndex(index));
     }
 
-    async _saveGroqKey(val) {
-        this._groqKey = val;
-        await cheatingDaddy.storage.setGroqApiKey(val);
-        this.requestUpdate();
+    async _saveGroqKey(index, value) {
+    const keys = [...this._groqKeys];
+
+    keys[index] = {
+        ...(keys[index] || {}),
+        label: keys[index]?.label || `Key ${index + 1}`,
+        key: value,
+    };
+
+    this._groqKeys = keys;
+
+    await cheatingDaddy.storage.setGroqApiKeys(keys);
+    this.requestUpdate();
     }
 
     async _saveGeminiLiveModel(val) {
@@ -1314,8 +1329,17 @@ export class MainView extends LitElement {
                 </summary>
                 <div class="config-content">
                     <div class="form-group">
-                        <label class="form-label">Groq API Key</label>
-                        <input type="password" placeholder="Optional" .value=${this._groqKey} @input=${e => this._saveGroqKey(e.target.value)} />
+                        <label class="form-label">Groq API Keys</label>
+
+                        ${this._groqKeys.map((slot, index) => html`
+                            <input
+                                type="password"
+                                placeholder="Groq API Key ${index + 1}"
+                                .value=${slot?.key || ''}
+                                @input=${e => this._saveGroqKey(index, e.target.value)}
+                            />
+                        `)}
+
                         <div class="form-hint">
                             <span class="link" @click=${() => this.onExternalLink('https://console.groq.com/keys')}>Get Groq key</span>
                         </div>

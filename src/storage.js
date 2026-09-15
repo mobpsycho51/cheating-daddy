@@ -18,8 +18,10 @@ const DEFAULT_CONFIG = {
 const DEFAULT_CREDENTIALS = {
     apiKey: '',
     groqApiKey: '',
+    groqApiKeys: [],
     geminiKeys: [],
     activeKeyIndex: 0,
+    activeGroqKeyIndex: 0,
 };
 
 const DEFAULT_PREFERENCES = {
@@ -268,12 +270,77 @@ function setApiKey(apiKey) {
     return setCredentials({ geminiKeys: slots, activeKeyIndex: index, apiKey });
 }
 
+function getGroqApiKeys() {
+    const credentials = getCredentials();
+    const slots = Array.isArray(credentials.groqApiKeys) ? credentials.groqApiKeys.filter(slot => slot && typeof slot.key === 'string') : [];
+
+    if (slots.length === 0 && credentials.groqApiKey) {
+        return [{ label: 'Key 1', key: credentials.groqApiKey }];
+    }
+
+    return slots;
+}
+
+function getActiveGroqKeyIndex() {
+    const slots = getGroqApiKeys();
+    if (slots.length === 0) return 0;
+
+    const index = getCredentials().activeGroqKeyIndex;
+    return Number.isInteger(index) && index >= 0 && index < slots.length ? index : 0;
+}
+
+function setGroqApiKeys(keys) {
+    const slots = (Array.isArray(keys) ? keys : []).map((slot, i) => ({
+        label: (slot && slot.label) || `Key ${i + 1}`,
+        key: (slot && slot.key) || '',
+    }));
+    const index = slots.length === 0 ? 0 : Math.min(getActiveGroqKeyIndex(), slots.length - 1);
+
+    return setCredentials({
+        groqApiKeys: slots,
+        activeGroqKeyIndex: index,
+        groqApiKey: slots[index] ? slots[index].key : '',
+    });
+}
+
+function setActiveGroqKeyIndex(index) {
+    const slots = getGroqApiKeys();
+    if (slots.length === 0) return false;
+
+    const active = Number.isInteger(index) && index >= 0 && index < slots.length ? index : 0;
+    return setCredentials({ groqApiKeys: slots, activeGroqKeyIndex: active, groqApiKey: slots[active].key });
+}
+
+function cycleActiveGroqKey() {
+    const slots = getGroqApiKeys();
+    if (slots.length < 2) return getActiveGroqKeyIndex();
+
+    const next = (getActiveGroqKeyIndex() + 1) % slots.length;
+    setActiveGroqKeyIndex(next);
+    return next;
+}
+
 function getGroqApiKey() {
-    return getCredentials().groqApiKey || '';
+    const slots = getGroqApiKeys();
+    const activeIndex = getActiveGroqKeyIndex();
+    const active = slots[activeIndex];
+
+    if (active && typeof active.key === 'string') {
+        return active.key;
+    }
+
+    return '';
 }
 
 function setGroqApiKey(groqApiKey) {
-    return setCredentials({ groqApiKey });
+    const slots = getGroqApiKeys();
+    if (slots.length === 0) {
+        return setCredentials({ groqApiKeys: [{ label: 'Key 1', key: groqApiKey }], activeGroqKeyIndex: 0, groqApiKey });
+    }
+
+    const index = getActiveGroqKeyIndex();
+    slots[index] = { ...slots[index], key: groqApiKey };
+    return setCredentials({ groqApiKeys: slots, activeGroqKeyIndex: index, groqApiKey });
 }
 
 // ============ PREFERENCES ============
@@ -585,6 +652,11 @@ module.exports = {
     cycleActiveKey,
     getGroqApiKey,
     setGroqApiKey,
+    getGroqApiKeys,
+    setGroqApiKeys,
+    getActiveGroqKeyIndex,
+    setActiveGroqKeyIndex,
+    cycleActiveGroqKey,
 
     // Preferences
     getPreferences,

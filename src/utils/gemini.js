@@ -8,6 +8,10 @@ const {
     incrementLimitCount,
     getApiKey,
     getGroqApiKey,
+    getGroqApiKeys,
+    getActiveGroqKeyIndex,
+    setActiveGroqKeyIndex,
+    cycleActiveGroqKey,
     incrementCharUsage,
     getConfig,
     getGeminiKeys,
@@ -282,12 +286,6 @@ function getGroqReasoningOptions(model, disableThinking) {
 }
 
 async function sendToGroq(transcription) {
-    const groqApiKey = getGroqApiKey();
-    if (!groqApiKey) {
-        console.log('No Groq API key configured, skipping Groq response');
-        return;
-    }
-
     if (!transcription || transcription.trim() === '') {
         console.log('Empty transcription, skipping Groq');
         return;
@@ -295,12 +293,105 @@ async function sendToGroq(transcription) {
 
     const config = getConfig();
     const modelToUse = config.groqModel;
+    const allSlots = getGroqApiKeys();
+    const validSlots = [];
+    for (let i = 0; i < allSlots.length; i++) {
+        if (allSlots[i] && allSlots[i].key && allSlots[i].key.trim() !== '') {
+            validSlots.push(i);
+        }
+    }
 
-    console.log(`Sending to Groq (${modelToUse}):`, transcription.substring(0, 100) + '...');
-    logTransportEvent('groq.text.request', {
-        model: modelToUse,
-        transcription,
-    });
+    if (validSlots.length === 0) {
+        console.log('No Groq API key configured, skipping Groq response');
+        return;
+    }
+
+    const activeIndex = getActiveGroqKeyIndex();
+    let startValidPos = validSlots.indexOf(activeIndex);
+    if (startValidPos === -1) {
+        startValidPos = 0;
+    }
+
+    let response = null;
+    let successfulOriginalSlotIndex = -1;
+    let lastErrorText = '';
+
+    for (let attempt = 0; attempt < validSlots.length; attempt++) {
+        const currentValidPos = (startValidPos + attempt) % validSlots.length;
+        const currentSlotIndex = validSlots[currentValidPos];
+        const currentKey = allSlots[currentSlotIndex].key;
+
+        console.log(`Sending to Groq (${modelToUse}) with slot index ${currentSlotIndex}:`, transcription.substring(0, 100) + '...');
+        logTransportEvent('groq.text.request', {
+            model: modelToUse,
+            transcription,
+            keyIndex: currentSlotIndex,
+        });
+
+        try {
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${currentKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    model: modelToUse,
+                    messages: [{ role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' }, ...groqConversationHistory],
+                    stream: true,
+                    temperature: 0.7,
+                    max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
+                    ...getGroqReasoningOptions(modelToUse, config.disableGroqThinking),
+                }),
+            });
+
+            if (res.status === 429) {
+                const errorText = await res.text();
+                console.warn(`Groq API slot index ${currentSlotIndex} returned 429 Rate Limited. Trying next key if available.`);
+                logTransportEvent('groq.text.rate_limited', {
+                    keyIndex: currentSlotIndex,
+                    status: 429,
+                    body: errorText,
+                });
+                lastErrorText = errorText;
+                continue;
+            }
+
+            if (!res.ok) {
+                const errorText = await res.text();
+                console.error('Groq API error:', res.status, errorText);
+                logTransportEvent('groq.text.http_error', {
+                    status: res.status,
+                    body: errorText,
+                });
+                sendToRenderer('update-status', `Groq error: ${res.status}`);
+                return;
+            }
+
+            response = res;
+            successfulOriginalSlotIndex = currentSlotIndex;
+            break;
+        } catch (err) {
+            console.error(`Error calling Groq API with slot index ${currentSlotIndex}:`, err);
+            lastErrorText = err.message;
+            logTransportEvent('groq.text.error', {
+                error: err.message,
+                stack: err.stack,
+            });
+            sendToRenderer('update-status', 'Groq error: ' + err.message);
+            return;
+        }
+    }
+
+    if (!response) {
+        console.error('All Groq API keys exhausted due to rate limits (429).');
+        logTransportEvent('groq.text.http_error', {
+            status: 429,
+            body: lastErrorText,
+        });
+        sendToRenderer('update-status', 'Groq error: 429');
+        return;
+    }
 
     groqConversationHistory.push({
         role: 'user',
@@ -312,33 +403,6 @@ async function sendToGroq(transcription) {
     }
 
     try {
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${groqApiKey}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                model: modelToUse,
-                messages: [{ role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' }, ...groqConversationHistory],
-                stream: true,
-                temperature: 0.7,
-                max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
-                ...getGroqReasoningOptions(modelToUse, config.disableGroqThinking),
-            }),
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('Groq API error:', response.status, errorText);
-            logTransportEvent('groq.text.http_error', {
-                status: response.status,
-                body: errorText,
-            });
-            sendToRenderer('update-status', `Groq error: ${response.status}`);
-            return;
-        }
-
         logTransportEvent('groq.text.http_response', {
             status: response.status,
         });
@@ -414,6 +478,11 @@ async function sendToGroq(transcription) {
             return;
         }
 
+        // Successfully completed stream — advance active key to the slot after successfulOriginalSlotIndex
+        const successfulValidPos = validSlots.indexOf(successfulOriginalSlotIndex);
+        const nextValidPos = (successfulValidPos + 1) % validSlots.length;
+        setActiveGroqKeyIndex(validSlots[nextValidPos]);
+
         logTransportEvent('groq.text.completed', {
             model: modelToUse,
             response: cleanedResponse,
@@ -421,7 +490,7 @@ async function sendToGroq(transcription) {
         console.log(`Groq response completed (${modelToUse})`);
         sendToRenderer('update-status', 'Listening...');
     } catch (error) {
-        console.error('Error calling Groq API:', error);
+        console.error('Error calling Groq API stream:', error);
         logTransportEvent('groq.text.error', {
             error: error.message,
             stack: error.stack,
@@ -431,9 +500,30 @@ async function sendToGroq(transcription) {
 }
 
 async function sendImageToGroq(base64Data, prompt) {
-    const groqApiKey = getGroqApiKey();
     const config = getConfig();
     const model = config.groqImageModel;
+    const allSlots = getGroqApiKeys();
+    const validSlots = [];
+    for (let i = 0; i < allSlots.length; i++) {
+        if (allSlots[i] && allSlots[i].key && allSlots[i].key.trim() !== '') {
+            validSlots.push(i);
+        }
+    }
+
+    if (validSlots.length === 0) {
+        console.log('No Groq API key configured for image, skipping Groq response');
+        return { success: false, error: 'No Groq API key configured' };
+    }
+
+    const activeIndex = getActiveGroqKeyIndex();
+    let startValidPos = validSlots.indexOf(activeIndex);
+    if (startValidPos === -1) {
+        startValidPos = 0;
+    }
+
+    let response = null;
+    let successfulOriginalSlotIndex = -1;
+    let lastErrorText = '';
 
     logTransportEvent('groq.image.request', {
         model,
@@ -441,47 +531,88 @@ async function sendImageToGroq(base64Data, prompt) {
         imageBytes: Buffer.byteLength(base64Data, 'base64'),
     });
 
-    try {
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${groqApiKey}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                model,
-                messages: [
-                    { role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' },
-                    {
-                        role: 'user',
-                        content: [
-                            { type: 'text', text: prompt },
-                            {
-                                type: 'image_url',
-                                image_url: {
-                                    url: `data:image/jpeg;base64,${base64Data}`,
+    for (let attempt = 0; attempt < validSlots.length; attempt++) {
+        const currentValidPos = (startValidPos + attempt) % validSlots.length;
+        const currentSlotIndex = validSlots[currentValidPos];
+        const currentKey = allSlots[currentSlotIndex].key;
+
+        try {
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${currentKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    model,
+                    messages: [
+                        { role: 'system', content: currentSystemPrompt || 'You are a helpful assistant.' },
+                        {
+                            role: 'user',
+                            content: [
+                                { type: 'text', text: prompt },
+                                {
+                                    type: 'image_url',
+                                    image_url: {
+                                        url: `data:image/jpeg;base64,${base64Data}`,
+                                    },
                                 },
-                            },
-                        ],
-                    },
-                ],
-                stream: true,
-                temperature: 0.7,
-                max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
-                ...getGroqReasoningOptions(model, config.disableGroqThinking),
-            }),
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('Groq image API error:', response.status, errorText);
-            logTransportEvent('groq.image.http_error', {
-                status: response.status,
-                body: errorText,
+                            ],
+                        },
+                    ],
+                    stream: true,
+                    temperature: 0.7,
+                    max_completion_tokens: GROQ_MAX_COMPLETION_TOKENS,
+                    ...getGroqReasoningOptions(model, config.disableGroqThinking),
+                }),
             });
-            return { success: false, error: `Groq error: ${response.status}` };
-        }
 
+            if (res.status === 429) {
+                const errorText = await res.text();
+                console.warn(`Groq image API slot index ${currentSlotIndex} returned 429 Rate Limited. Trying next key if available.`);
+                logTransportEvent('groq.image.rate_limited', {
+                    keyIndex: currentSlotIndex,
+                    status: 429,
+                    body: errorText,
+                });
+                lastErrorText = errorText;
+                continue;
+            }
+
+            if (!res.ok) {
+                const errorText = await res.text();
+                console.error('Groq image API error:', res.status, errorText);
+                logTransportEvent('groq.image.http_error', {
+                    status: res.status,
+                    body: errorText,
+                });
+                return { success: false, error: `Groq error: ${res.status}` };
+            }
+
+            response = res;
+            successfulOriginalSlotIndex = currentSlotIndex;
+            break;
+        } catch (error) {
+            console.error(`Error calling Groq image API with slot index ${currentSlotIndex}:`, error);
+            lastErrorText = error.message;
+            logTransportEvent('groq.image.error', {
+                error: error.message,
+                stack: error.stack,
+            });
+            return { success: false, error: error.message };
+        }
+    }
+
+    if (!response) {
+        console.error('All Groq API keys exhausted due to rate limits (429) for image request.');
+        logTransportEvent('groq.image.http_error', {
+            status: 429,
+            body: lastErrorText,
+        });
+        return { success: false, error: 'Groq error: 429' };
+    }
+
+    try {
         logTransportEvent('groq.image.http_response', {
             status: response.status,
         });
@@ -543,9 +674,15 @@ async function sendImageToGroq(base64Data, prompt) {
             model,
             response: cleanedResponse,
         });
+
+        // Successfully completed image stream — advance active key to the slot after successfulOriginalSlotIndex
+        const successfulValidPos = validSlots.indexOf(successfulOriginalSlotIndex);
+        const nextValidPos = (successfulValidPos + 1) % validSlots.length;
+        setActiveGroqKeyIndex(validSlots[nextValidPos]);
+
         return { success: true, text: cleanedResponse, model };
     } catch (error) {
-        console.error('Error calling Groq image API:', error);
+        console.error('Error calling Groq image API stream:', error);
         logTransportEvent('groq.image.error', {
             error: error.message,
             stack: error.stack,
